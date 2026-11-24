@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import itertools
 import random
-from collections import Counter
+from collections import Counter, OrderedDict
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Protocol
@@ -107,6 +107,7 @@ class Node:
         self.beats: dict[str, tuple[int, int]] = {}
 
         self.ops: dict[str, _Op] = {}
+        self.seen_puts: OrderedDict[tuple, dict | None] = OrderedDict()   # (client, req) -> reply sent
         self._ids = itertools.count(1)
         self.handoffs: dict[str, tuple[str, list]] = {}
         self.handoff_targets: set[str] = set()
@@ -181,6 +182,15 @@ class Node:
             self.rt.send(src, {"t": PUT_REPLY, "req": m["req"], "ok": False,
                                "error": "not a replica", "redirect": list(preference)})
             return
+        request = (src, m["req"])
+        if request in self.seen_puts:              # a duplicated or retried request: never write twice
+            self.stats["duplicate_puts"] += 1
+            if self.seen_puts[request] is not None:
+                self.rt.send(src, self.seen_puts[request])
+            return
+        self.seen_puts[request] = None
+        if len(self.seen_puts) > 100_000:
+            self.seen_puts.popitem(last=False)
         self.stats["puts"] += 1
         context = dict(m.get("ctx") or {})
         counter = self.policy.next_counter(self.id, context, self.store.next_counter)
@@ -237,6 +247,8 @@ class Node:
 
     def _reply_put(self, op: _Op, reply: dict) -> None:
         op.replied = True
+        if (op.client, op.req) in self.seen_puts:
+            self.seen_puts[(op.client, op.req)] = reply
         self.rt.send(op.client, reply)
 
     def _settle_put(self, op: _Op) -> None:

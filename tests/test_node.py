@@ -140,3 +140,16 @@ def test_failure_detection_follows_crashes_and_restarts():
     settle(sim, 1.5)
     assert all(node.alive("n3") for node in sim.nodes.values())
 
+
+def test_a_duplicated_put_is_written_once():
+    """Found by the simulator: the network delivered one put twice and the coordinator
+    stored two versions of the same write. Puts are now idempotent per (client, request)."""
+    sim = Simulation(9)
+    client = Driver(sim)
+    coordinator = sim.ring.preference_list("k", 3)[0]
+    message = {"t": PUT, "key": "k", "value": b"once", "ctx": {}, "req": 99}
+    sim.send(client.id, coordinator, dict(message))
+    sim.send(client.id, coordinator, dict(message))
+    settle(sim)
+    assert len(sim.storage[coordinator].get("k")) == 1
+    assert sim.nodes[coordinator].stats["duplicate_puts"] == 1
